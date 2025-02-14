@@ -33,7 +33,7 @@ type tun struct {
 	ioctlFd     uintptr
 
 	Routes          atomic.Pointer[[]Route]
-	routeTree       atomic.Pointer[bart.Table[netip.Addr]]
+	routeTree       atomic.Pointer[bart.Table[util.EE_NewRouteType]]
 	routeChan       chan struct{}
 	useSystemRoutes bool
 
@@ -230,7 +230,7 @@ func (t *tun) NewMultiQueueReader() (io.ReadWriteCloser, error) {
 	return file, nil
 }
 
-func (t *tun) RouteFor(ip netip.Addr) netip.Addr {
+func (t *tun) RoutesFor(ip netip.Addr) util.EE_NewRouteType {
 	r, _ := t.routeTree.Load().Lookup(ip)
 	return r
 }
@@ -548,7 +548,7 @@ func (t *tun) updateRoutes(r netlink.RouteUpdate) {
 
 	if r.Type == unix.RTM_NEWROUTE {
 		t.l.WithField("destination", r.Dst).WithField("via", r.Gw).Info("Adding route")
-		newTree.Insert(dst, gwAddr)
+		newTree.Insert(dst, []netip.Addr{gwAddr})
 
 	} else {
 		newTree.Delete(dst)

@@ -21,7 +21,7 @@ type tun struct {
 	fd        int
 	cidr      netip.Prefix
 	Routes    atomic.Pointer[[]Route]
-	routeTree atomic.Pointer[bart.Table[netip.Addr]]
+	routeTree atomic.Pointer[bart.Table[util.EE_NewRouteType]]
 	l         *logrus.Logger
 }
 
@@ -56,7 +56,7 @@ func newTun(_ *config.C, _ *logrus.Logger, _ netip.Prefix, _ bool) (*tun, error)
 	return nil, fmt.Errorf("newTun not supported in Android")
 }
 
-func (t *tun) RouteFor(ip netip.Addr) netip.Addr {
+func (t *tun) RoutesFor(ip netip.Addr) util.EE_NewRouteType {
 	r, _ := t.routeTree.Load().Lookup(ip)
 	return r
 }

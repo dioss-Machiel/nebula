@@ -8,7 +8,7 @@ import (
 
 type NoopTun struct{}
 
-func (NoopTun) RouteFor(addr netip.Addr) netip.Addr {
+func (NoopTun) RoutesFor(addr netip.Addr) netip.Addr {
 	return netip.Addr{}
 }
 

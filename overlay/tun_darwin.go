@@ -28,7 +28,7 @@ type tun struct {
 	cidr       netip.Prefix
 	DefaultMTU int
 	Routes     atomic.Pointer[[]Route]
-	routeTree  atomic.Pointer[bart.Table[netip.Addr]]
+	routeTree  atomic.Pointer[bart.Table[util.EE_NewRouteType]]
 	linkAddr   *netroute.LinkAddr
 	l          *logrus.Logger
 
@@ -334,12 +334,12 @@ func (t *tun) reload(c *config.C, initial bool) error {
 	return nil
 }
 
-func (t *tun) RouteFor(ip netip.Addr) netip.Addr {
+func (t *tun) RoutesFor(ip netip.Addr) util.EE_NewRouteType {
 	r, ok := t.routeTree.Load().Lookup(ip)
 	if ok {
 		return r
 	}
-	return netip.Addr{}
+	return util.EE_NewRouteType{}
 }
 
 // Get the LinkAddr for the interface of the given name
@@ -388,7 +388,7 @@ func (t *tun) addRoutes(logErrors bool) error {
 	maskAddr := &netroute.Inet4Addr{}
 	routes := *t.Routes.Load()
 	for _, r := range routes {
-		if !r.Via.IsValid() || !r.Install {
+		if len(r.Via) == 0 || !r.Install {
 			// We don't allow route MTUs so only install routes with a via
 			continue
 		}

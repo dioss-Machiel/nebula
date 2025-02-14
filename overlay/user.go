@@ -6,6 +6,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula/config"
+	"github.com/slackhq/nebula/util"
 )
 
 func NewUserDeviceFromConfig(c *config.C, l *logrus.Logger, tunCidr netip.Prefix, routines int) (Device, error) {
@@ -40,7 +41,7 @@ func (d *UserDevice) Activate() error {
 }
 func (d *UserDevice) Cidr() netip.Prefix                { return d.tunCidr }
 func (d *UserDevice) Name() string                      { return "faketun0" }
-func (d *UserDevice) RouteFor(ip netip.Addr) netip.Addr { return ip }
+func (d *UserDevice) RoutesFor(ip netip.Addr) util.EE_NewRouteType { return util.EE_NewRouteType{ip} }
 func (d *UserDevice) NewMultiQueueReader() (io.ReadWriteCloser, error) {
 	return d, nil
 }
