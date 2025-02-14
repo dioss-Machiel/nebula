@@ -508,34 +508,18 @@ func (t *tun) watchRoutes() {
 	}()
 }
 
-func (t *tun) updateRoutes(r netlink.RouteUpdate) {
-
-	t.l.WithField("Netlink update type", r.Type).Debug("Netlink update message")
-
-	// // TODO
-	// // Just parse the entire list every time, much better.
-	// _, err := netlink.LinkByName(t.Device)
-	// if err != nil {
-	// 	t.l.WithField("Devicename", t.Device).Error("Faild to update routes: failed to get link by name")
-	// 	return
-	// }
-
-	// netlinkRoutes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
-	// if err != nil {
-	// 	t.l.WithField("Devicename", t.Device).Error("Faild to update routes: failed to get route list")
-	// 	return
-	// }
-
-	// for _, netlinkRoute := range netlinkRoutes {
-
-	// 	t.l.WithField("route", netlinkRoute).WithField("via", netlinkRoute.MultiPath).Debug("Parsing netlink route")
-
-	// }
+func (t *tun) getGatewaysFromRoute(r *netlink.Route) util.EE_NewRouteType {
 
 	var gateways util.EE_NewRouteType
 
-	if len(r.Gw) > 0 {
+	link, err := netlink.LinkByName(t.Device)
+	if err != nil {
+		t.l.WithField("Devicename", t.Device).Error("Ignoring route update: failed to get link by name")
+		return gateways
+	}
 
+	// If this route is relevant to our interface and there is a gateway then add it
+	if r.LinkIndex == link.Attrs().Index && len(r.Gw) > 0 {
 		//TODO: IPV6-WORK what if not ok?
 		gwAddr, ok := netip.AddrFromSlice(r.Gw)
 		if !ok {
@@ -548,12 +532,11 @@ func (t *tun) updateRoutes(r netlink.RouteUpdate) {
 				gateways = append(gateways, gwAddr)
 			}
 		}
-
 	}
 
 	for _, p := range r.MultiPath {
-		if len(p.Gw) > 0 {
-
+		// If this route is relevant to our interface and there is a gateway then add it
+		if p.LinkIndex == link.Attrs().Index && len(p.Gw) > 0 {
 			//TODO: IPV6-WORK what if not ok?
 			gwAddr, ok := netip.AddrFromSlice(p.Gw)
 			if !ok {
@@ -569,9 +552,16 @@ func (t *tun) updateRoutes(r netlink.RouteUpdate) {
 		}
 	}
 
-	// No gateways could be parsed / found, stop here.
+	return gateways
+}
+
+func (t *tun) updateRoutes(r netlink.RouteUpdate) {
+
+	gateways := t.getGatewaysFromRoute(&r.Route)
+
 	if len(gateways) == 0 {
-		t.l.WithField("route", r).Debug("Ignoring route update, no remaining gateways")
+		// No gateways relevant to our network, no routing changes required.
+		t.l.WithField("route", r).Debug("Ignoring route update, no gateways")
 		return
 	}
 
@@ -593,12 +583,12 @@ func (t *tun) updateRoutes(r netlink.RouteUpdate) {
 	newTree := t.routeTree.Load().Clone()
 
 	if r.Type == unix.RTM_NEWROUTE {
-		t.l.WithField("Route", r).Info("Adding route")
+		t.l.WithField("destination", dst).WithField("via", gateways).Info("Adding route")
 		newTree.Insert(dst, gateways)
 
 	} else {
-		// newTree.Delete(dst)
-		t.l.WithField("Route", r).Info("Removing route")
+		t.l.WithField("destination", dst).WithField("via", gateways).Info("Removing route")
+		newTree.Delete(dst)
 	}
 	t.routeTree.Store(newTree)
 }
