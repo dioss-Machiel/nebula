@@ -8,6 +8,8 @@ import (
 	"github.com/slackhq/nebula/header"
 	"github.com/slackhq/nebula/iputil"
 	"github.com/slackhq/nebula/noiseutil"
+	"github.com/slackhq/nebula/util"
+	"github.com/zeebo/xxh3"
 )
 
 func (f *Interface) consumeInsidePacket(packet []byte, fwPacket *firewall.Packet, nb, out []byte, q int, localCache firewall.ConntrackCache) {
@@ -132,6 +134,43 @@ func (f *Interface) getOrHandshakeNoRouting(vpnIp netip.Addr, cacheCallback func
 	return f.handshakeManager.GetOrHandshake(vpnIp, cacheCallback)
 }
 
+func hashPacket(p *firewall.Packet) int {
+	hasher := xxh3.Hasher{}
+
+	hasher.Write(p.LocalIP.AsSlice())
+	hasher.Write(p.RemoteIP.AsSlice())
+	hasher.Write([]byte{
+		byte(p.LocalPort & 0xFF),
+		byte((p.LocalPort >> 8) & 0xFF),
+		byte(p.RemotePort & 0xFF),
+		byte((p.RemotePort >> 8) & 0xFF),
+		byte(p.Protocol),
+	})
+
+	// Use xxh3 as it is a fast hash with good distribution
+	return int(hasher.Sum64() & 0x7FFFFFFF)
+}
+
+func balancePacket(fwPacket *firewall.Packet, gateways util.EE_NewRouteType) netip.Addr {
+	hash := hashPacket(fwPacket)
+
+	selectedGateway := netip.Addr{}
+
+	for i := range gateways {
+		if hash <= gateways[i].UpperBound() {
+			selectedGateway = gateways[i].Ip()
+			break
+		}
+	}
+
+	// This should never happen
+	if !selectedGateway.IsValid() {
+		panic("The packet hash value should always fall inside a gateway bucket")
+	}
+
+	return selectedGateway
+}
+
 // This is called for external traffic
 // getOrHandshake returns nil if the vpnIp is not routable.
 // If the 2nd return var is false then the hostinfo is not ready to be used in a tunnel
@@ -141,35 +180,39 @@ func (f *Interface) getOrHandshakeConsiderRouting(fwPacket *firewall.Packet, cac
 
 	// Host is inside the mesh, no routing
 	if f.myVpnNet.Contains(destinationIp) {
-		f.l.WithField("destination", destinationIp).Debug("Inside mesh, no routing required")
 		return f.handshakeManager.GetOrHandshake(destinationIp, cacheCallback)
 	}
 
-	availableRoutes := f.inside.RoutesFor(destinationIp)
-	if len(availableRoutes) == 0 {
-		f.l.WithField("destination", destinationIp).Debug("No routes found!")
+	gateways := f.inside.RoutesFor(destinationIp)
+	if len(gateways) == 0 {
 		return nil, false
-	} else if len(availableRoutes) == 1 {
+	} else if len(gateways) == 1 {
 		// Single gateway route
-		f.l.WithField("destination", destinationIp).WithField("gateway", availableRoutes[0]).Debug("Routing via single gateway")
-		return f.handshakeManager.GetOrHandshake(availableRoutes[0], cacheCallback)
+		return f.handshakeManager.GetOrHandshake(gateways[0].Ip(), cacheCallback)
 	} else {
-		// Multi gateway route, calculate endpoint
+		// Multi gateway route, perform ECMP categorization
+		gatewayIp := balancePacket(fwPacket, gateways)
+		if hostInfo, ok := f.handshakeManager.GetOrHandshake(gatewayIp, cacheCallback); ok {
+			return hostInfo, ok
+		}
 
-		// This loops over all candidates, prefers the first one found
-		// if not found it will attempt the others
+		// It appears the selected gateway cannot be reached, attempt the others as a fallback
+		if f.l.Level >= logrus.DebugLevel {
+			f.l.WithField("destination", destinationIp).
+				WithField("originalGateway", gatewayIp).
+				Debugln("Calculated gateway for ECMP not available, attempting other gateways")
+		}
+
 		var hostInfo *HostInfo
 		var ok bool
 
-		f.l.WithField("destination", destinationIp).WithField("gateways", availableRoutes).Debug("Routing via multipath gateways")
-
-		for _, candidate := range availableRoutes {
-			if hostInfo, ok = f.handshakeManager.GetOrHandshake(candidate, cacheCallback); ok {
-				if f.l.Level >= logrus.DebugLevel && len(availableRoutes) > 1 {
-					f.l.WithField("destination", destinationIp).
-						WithField("gateway", candidate).
-						Debugln("Routing via multipathing")
-				}
+		for i := range gateways {
+			// Skip the gateway that failed previously
+			if gateways[i].Ip() == gatewayIp {
+				continue
+			}
+			// Find another gateway to fallback on (this breaks ECMP but that seems better than no connectivity)
+			if hostInfo, ok = f.handshakeManager.GetOrHandshake(gateways[i].Ip(), cacheCallback); ok {
 				break
 			}
 		}
